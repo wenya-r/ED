@@ -5,9 +5,10 @@ import scipy.sparse as _sp
 import warnings
 import numpy as _np
 from ._functions import function
-
-
-
+import time
+from multiprocessing import Pool
+import os
+from functools import partial
 
 def _consolidate_static(static_list):
 	eps = 10 * _np.finfo(_np.float64).eps
@@ -132,7 +133,6 @@ def _consolidate_dynamic(dynamic_list):
 # 		i += 1
 
 
-
 def test_function(func,func_args):
 	t = _np.cos( (_np.pi/_np.exp(0))**( 1.0/_np.euler_gamma ) )
 	func_val=func(t,*func_args)
@@ -142,6 +142,12 @@ def test_function(func,func_args):
 
 
 
+
+def cal_m(basis, dtype, Ns, argument): #opstr, indx, J):
+	opstr, indx, J = argument
+	ME,row,col = basis.Op(opstr,indx,J,dtype)
+	Ht=_sp.csr_matrix((ME,(row,col)),shape=(Ns,Ns),dtype=dtype) 
+	return Ht
 
 def make_static(basis,static_list,dtype):
 	"""
@@ -160,17 +166,40 @@ def make_static(basis,static_list,dtype):
 		to a csr_matrix class which has optimal sparse matrix vector multiplication.
 	"""
 	Ns=basis.Ns
-	H = _sp.csr_matrix((Ns,Ns),dtype=dtype)
+#	H = _sp.csr_matrix((Ns,Ns),dtype=dtype)
 	static_list = _consolidate_static(static_list)
-	for opstr,indx,J in static_list:
-		# print(opstr,bond)
-		ME,row,col = basis.Op(opstr,indx,J,dtype)
-		Ht=_sp.csr_matrix((ME,(row,col)),shape=(Ns,Ns),dtype=dtype) 
-		H=H+Ht
-		del Ht
+	_time = time.time()
+	
+	nproc = int(os.environ.get("SLURM_CPUS_PER_TASK", 2))
+	print("Running on %d CPUs" % nproc)
+	print("Length of static =", len(static_list)) 
+	p = Pool(nproc) 
+	try:
+		func = partial(cal_m, basis, dtype, Ns)
+		results = p.map(func, static_list)
+	except (KeyboardInterrupt, SystemExit):
+		p.terminate()
+		p.join()
+		sys.exit(1)
+	else:
+		p.close()
+		p.join()
+	H = _sp.csr_matrix((Ns,Ns),dtype=dtype)
+	for result in results:
+		H=H+result
+		del result
 		H.sum_duplicates() # sum duplicate matrix elements
 		H.eliminate_zeros() # remove all zero matrix elements
-	# print()
+	
+#	for opstr,indx,J in static_list:
+#		# print(opstr,bond)
+#		ME,row,col = basis.Op(opstr,indx,J,dtype)
+#		Ht=_sp.csr_matrix((ME,(row,col)),shape=(Ns,Ns),dtype=dtype) 
+#		H=H+Ht
+#		del Ht
+#		H.sum_duplicates() # sum duplicate matrix elements
+#		H.eliminate_zeros() # remove all zero matrix elements
+	print('time in static =', time.time()-_time)
 	return H 
 
 
